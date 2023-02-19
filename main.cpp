@@ -3,14 +3,14 @@
 #include <iostream>
 #include <vector>
 
-constexpr auto t = 0.0000001;
-constexpr auto e_pow_2 = 0.0000001 * 0.0000001;
+constexpr auto t = 0.00001;
+constexpr auto e_pow_2 = 0.00001 * 0.00001;
 constexpr auto RANK_ROOT = 0;
-constexpr auto N = 200;
+constexpr auto N = 10000;
 constexpr auto BREAK = 0;
 constexpr auto CONTINUE = 1;
 
-void Matrix_Multiply(const double *buf, int lines, const double *x, double *tmp) {
+void MatrixMultiply(const double *buf, int lines, const double *x, double *tmp) {
     for (int i = 0; i < lines; i++) {
         double sum = 0;
         for (int j = 0; j < N; j++) {
@@ -20,7 +20,7 @@ void Matrix_Multiply(const double *buf, int lines, const double *x, double *tmp)
     }
 }
 
-std::vector<int> Get_lines_count(int size, int *offset) {
+std::vector<int> GetlinesCount(int size, int *offset) {
     std::vector<int> lines_count(size);
     int value = N / size;
     for (int i = 0; i < size; i++) {
@@ -48,54 +48,22 @@ double Norma(const double *vector, int size) {
     return tmp;
 }
 
-void Vector_Difference(const double * a_1, const double *a_2, int size, int offset, double *tmp) {
+void VectorDifference(const double * a_1, const double *a_2, int size, int offset, double *tmp) {
     for (int i = offset; i < size + offset; i++) {
         tmp[i - offset] = a_1[i - offset] - a_2[i];
     }
 }
 
-void Vector_Multiply_Const(const double *a_1, double value, int size, double *tmp) {
+void VectorMultiplyConst(const double *a_1, double value, int size, double *tmp) {
     for (int i = 0; i < size; i++) {
         tmp[i] = a_1[i] * value;
-    }
-}
-
-void Print_Vector(double *vector) {
-    for (int i = 0; i < N; i++) {
-        std::cout << vector[i] << ' ';
-    }
-    std::cout << '\n';
-}
-
-void Print_Vector(const int *vector) {
-    for (int i = 0; i < N; i++) {
-        std::cout << vector[i] << ' ';
-    }
-    std::cout << '\n';
-}
-
-void Print_Matrix(double *vector, int length, int width) {
-    for (int i = 0; i < length; i++) {
-        for (int j = 0; j < width; j++) {
-            std::cout << vector[i * N + j] << ' ';
-        }
-        std::cout << '\n';
-    }
-}
-
-void Print_Matrix(const int *vector, int length, int width) {
-    for (int i = 0; i < length; i++) {
-        for (int j = 0; j < width; j++) {
-            std::cout << vector[i * N + j] << ' ';
-        }
-        std::cout << '\n';
     }
 }
 
 void Run(int size, int rank) {
     std::vector<int> offset(size);
 
-    auto lines_count = Get_lines_count(size, offset.data());
+    auto lines_count = GetlinesCount(size, offset.data());
 
     std::vector<double> b(N);
     std::vector<double> x(N);
@@ -137,19 +105,19 @@ void Run(int size, int rank) {
             for (int other_rank = 1; other_rank < size; other_rank++) {
                 MPI_Send(x.data(), N, MPI_DOUBLE, other_rank, CONTINUE, MPI_COMM_WORLD);
             }
-            Matrix_Multiply(A_buf.data(), lines_count[RANK_ROOT], x.data(), tmp.data());
-            Vector_Difference(tmp.data(), b.data(), lines_count[rank], offset[RANK_ROOT], tmp.data());
-            
+            MatrixMultiply(A_buf.data(), lines_count[RANK_ROOT], x.data(), tmp.data());
+            VectorDifference(tmp.data(), b.data(), lines_count[rank], offset[RANK_ROOT], tmp.data());
+
             double norma = Norma(tmp.data(), lines_count[RANK_ROOT]);
-            
+
             std::vector<double> epsilon_part(1);
             for (int other_rank = 1; other_rank < size; other_rank++) {
                 MPI_Recv(epsilon_part.data(), 1, MPI_DOUBLE, other_rank, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                 norma += epsilon_part[0];
             }
 
-            Vector_Multiply_Const(tmp.data(), t, lines_count[rank], multiply_tmp_const.data());
-            Vector_Difference(x.data(), multiply_tmp_const.data(), lines_count[rank], offset[rank], new_x_part.data());
+            VectorMultiplyConst(tmp.data(), t, lines_count[rank], multiply_tmp_const.data());
+            VectorDifference(x.data(), multiply_tmp_const.data(), lines_count[rank], offset[rank], new_x_part.data());
 
             MPI_Gatherv(new_x_part.data(), lines_count[rank], MPI_DOUBLE, x.data(), lines_count.data(), offset.data(),
                         MPI_DOUBLE, 0, MPI_COMM_WORLD);
@@ -162,26 +130,24 @@ void Run(int size, int rank) {
                 }
                 break;
             }
-            
+
 
         } else {
             MPI_Status status;
-            MPI_Recv(x.data(), N, MPI_DOUBLE, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+            MPI_Recv(x.data(), N, MPI_DOUBLE, RANK_ROOT, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             if (status.MPI_TAG == BREAK) {
                 break;
             }
 
-            Matrix_Multiply(A_buf.data(), lines_count[rank], x.data(), tmp.data());
-            Vector_Difference(tmp.data(), b.data(), lines_count[rank], offset[rank], tmp.data());
+            MatrixMultiply(A_buf.data(), lines_count[rank], x.data(), tmp.data());
+            VectorDifference(tmp.data(), b.data(), lines_count[rank], offset[rank], tmp.data());
 
             double norma = Norma(tmp.data(), lines_count[rank]);
+            VectorMultiplyConst(tmp.data(), t, lines_count[rank], multiply_tmp_const.data());
+            VectorDifference(multiply_tmp_const.data(), x.data(), lines_count[rank], offset[rank], new_x_part.data());
 
-            MPI_Send(&norma, 1, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-
-            Vector_Multiply_Const(tmp.data(), t, lines_count[rank], multiply_tmp_const.data());
-            Vector_Difference(multiply_tmp_const.data(), x.data(), lines_count[rank], offset[rank], new_x_part.data());
-
-            Vector_Multiply_Const(new_x_part.data(), -1, lines_count[rank], new_x_part.data());
+            VectorMultiplyConst(new_x_part.data(), -1, lines_count[rank], new_x_part.data());
+            MPI_Send(&norma, 1, MPI_DOUBLE, RANK_ROOT, CONTINUE, MPI_COMM_WORLD);
 
             MPI_Gatherv(new_x_part.data(), lines_count[rank], MPI_DOUBLE, x.data(), lines_count.data(), offset.data(),
                         MPI_DOUBLE, RANK_ROOT, MPI_COMM_WORLD);
