@@ -6,7 +6,7 @@
 constexpr auto t = 0.00001;
 constexpr auto e_pow_2 = 0.00001 * 0.00001;
 constexpr auto RANK_ROOT = 0;
-constexpr auto N = 10000;
+constexpr auto N = 15000;
 constexpr auto BREAK = 0;
 constexpr auto CONTINUE = 1;
 
@@ -60,6 +60,55 @@ void VectorMultiplyConst(const double *a_1, double value, int size, double *tmp)
     }
 }
 
+double GetSummaryNorm(int size, double rank_root_norm) {
+    double cur_norma = rank_root_norm;
+
+    std::vector<double> epsilon_part(1);
+    for (int other_rank = 1; other_rank < size; other_rank++) {
+        MPI_Recv(epsilon_part.data(), 1, MPI_DOUBLE, other_rank, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        cur_norma += epsilon_part[0];
+    }
+
+    return cur_norma;
+}
+
+bool NormaCompare(double norma, int size, double norma_b, const std::vector<double>& x) {
+    if (norma / norma_b < e_pow_2) {
+        /*for (auto i: x)
+            std::cout << i << " ";*/
+        for (int other_rank = 1; other_rank < size; other_rank++) {
+            MPI_Send(x.data(), N, MPI_DOUBLE, other_rank, BREAK, MPI_COMM_WORLD);
+        }
+        return true;
+    }
+    return false;
+}
+
+void SendA(const std::vector<int>& offset, const std::vector<int>& lines_count, int rank, std::vector<double>& A_buf) {
+    std::vector<int> lines_count_mult_N(lines_count.begin(), lines_count.end());
+    for (int & i : lines_count_mult_N) {
+        i *= N;
+    }
+
+    std::vector<int> offset_mult_N(offset.begin(), offset.end());
+    for (int & i : offset_mult_N) {
+        i *= N;
+    }
+    if (rank == RANK_ROOT) {
+        std::vector<double> A((long long) N * (long long) N);
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                A[i * N + j] = (i == j) ? 2.0 : 1.0;
+            }
+        }
+        MPI_Scatterv(A.data(), lines_count_mult_N.data(), offset_mult_N.data(), MPI_DOUBLE, A_buf.data(),
+                     lines_count_mult_N[rank], MPI_DOUBLE, RANK_ROOT, MPI_COMM_WORLD);
+    } else {
+        MPI_Scatterv(nullptr, lines_count_mult_N.data(), offset_mult_N.data(), MPI_DOUBLE, A_buf.data(),
+                     lines_count_mult_N[rank], MPI_DOUBLE, RANK_ROOT, MPI_COMM_WORLD);
+    }
+}
+
 void Run(int size, int rank) {
     std::vector<int> offset(size);
 
@@ -73,26 +122,8 @@ void Run(int size, int rank) {
         b[i] = N + 1;
         x[i] = 0;
     }
-    if (rank == RANK_ROOT) {
-        std::vector<double> A((long long )N * (long long)N);
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                A[i * N + j] = (i == j) ? 2.0 : 1.0;
-            }
-        }
-        for (int other_rank = 1; other_rank < size; other_rank++) {
-            MPI_Send(A.data() + N * offset[other_rank], lines_count[other_rank] * N, MPI_DOUBLE,
-                     other_rank, 1, MPI_COMM_WORLD);
-        }
 
-        for (int i = 0; i < lines_count[rank]; i++) {
-            for (int j = 0; j < N; j++) {
-                A_buf[i * N + j] = A[i * N + j];
-            }
-        }
-    } else {
-        MPI_Recv(A_buf.data(), lines_count[rank] * N, MPI_DOUBLE, 0, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    }
+    SendA(offset, lines_count, rank, A_buf);
 
     double norma_b = Norma(b.data(), N);
 
@@ -108,30 +139,17 @@ void Run(int size, int rank) {
             MatrixMultiply(A_buf.data(), lines_count[RANK_ROOT], x.data(), tmp.data());
             VectorDifference(tmp.data(), b.data(), lines_count[rank], offset[RANK_ROOT], tmp.data());
 
-            double norma = Norma(tmp.data(), lines_count[RANK_ROOT]);
-
-            std::vector<double> epsilon_part(1);
-            for (int other_rank = 1; other_rank < size; other_rank++) {
-                MPI_Recv(epsilon_part.data(), 1, MPI_DOUBLE, other_rank, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                norma += epsilon_part[0];
-            }
+            double norma = GetSummaryNorm(size, Norma(tmp.data(), lines_count[RANK_ROOT]));
 
             VectorMultiplyConst(tmp.data(), t, lines_count[rank], multiply_tmp_const.data());
             VectorDifference(x.data(), multiply_tmp_const.data(), lines_count[rank], offset[rank], new_x_part.data());
 
             MPI_Gatherv(new_x_part.data(), lines_count[rank], MPI_DOUBLE, x.data(), lines_count.data(), offset.data(),
-                        MPI_DOUBLE, 0, MPI_COMM_WORLD);
+                        MPI_DOUBLE, RANK_ROOT, MPI_COMM_WORLD);
 
-            if (norma / norma_b < e_pow_2) {
-                /*std::cout << "x:";
-                Print_Vector(x.data());*/
-                for (int other_rank = 1; other_rank < size; other_rank++) {
-                    MPI_Send(x.data(), N, MPI_DOUBLE, other_rank, BREAK, MPI_COMM_WORLD);
-                }
+            if (NormaCompare(norma, size, norma_b, x)) {
                 break;
             }
-
-
         } else {
             MPI_Status status;
             MPI_Recv(x.data(), N, MPI_DOUBLE, RANK_ROOT, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
